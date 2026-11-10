@@ -5,8 +5,8 @@
 # The camera reads the code from its own snapshots, tries the network it
 # names, and keeps the credentials only once it is actually on that network.
 # Each step is announced through the IR-cut filter (majestic's /night/chime),
-# because the person holding the phone has no other way to know what the
-# camera made of it:
+# or without majestic as beeps through aplay, because the person holding the
+# phone has no other way to know what the camera made of it:
 #
 #   scanned    two quick rising clicks   the code was read
 #   connected  a rising four-note run    joined and got an address; rebooting
@@ -36,9 +36,36 @@ say() {
 }
 
 # The filter is majestic's to drive; loopback needs no credential, so this
-# works on a camera nobody has claimed yet. Silent on firmware without it.
+# works on a camera nobody has claimed yet. Without it, a camera with aplay
+# beeps the same patterns; otherwise it stays silent.
 chime() {
-	timeout 3 wget -q -O /dev/null "http://127.0.0.1/night/chime?cue=$1" 2>/dev/null
+	timeout 3 wget -q -O /dev/null "http://127.0.0.1/night/chime?cue=$1" 2>/dev/null ||
+		{ command -v aplay >/dev/null &&
+		beep "$1" | aplay -q -t raw -f U8 -r 8000 -c 1 2>/dev/null; }
+}
+
+# $1 Hz for $2 ms, as 8 kHz unsigned 8-bit: a square wave at a quarter of full
+# scale, as the small speakers these cameras carry clip well before that, or
+# silence for 0 Hz.
+tone() {
+	local f=$1 h='\240' l='\140' hi= lo= i=0 n
+	[ "$f" -gt 0 ] || f=1000 h='\200' l='\200'
+	while [ $i -lt $((4000 / f)) ]; do hi=$hi$h lo=$lo$l i=$((i + 1)); done
+	n=$((f * $2 / 1000)) i=0
+	while [ $i -lt $n ]; do printf "$hi$lo"; i=$((i + 1)); done
+}
+
+beep() {
+	case "$1" in
+	scanned)	tone 880 80; tone 0 40; tone 1320 80 ;;
+	connected)	tone 523 120; tone 659 120; tone 784 120; tone 1047 250 ;;
+	wrongkey)	tone 220 150; tone 0 80; tone 220 150; tone 0 80; tone 220 150 ;;
+	nonetwork)	tone 660 100; tone 440 150; tone 0 150; tone 660 100; tone 440 150 ;;
+	nodhcp)		tone 660 500; tone 330 300 ;;
+	badqr)		tone 330 120 ;;
+	timeout)	tone 784 150; tone 587 150; tone 392 250 ;;
+	esac
+	tone 0 50
 }
 
 # Print the SSID on the first line and the password on the second, or fail for
@@ -184,8 +211,10 @@ qr_main() {
 					fw_setenv wlanssid "$ssid"
 					fw_setenv wlanpass "$pass"
 					say "Joined \"$ssid\"; credentials saved, rebooting"
-					curl -s --data-binary @/usr/share/openipc/sounds/ready_48k.pcm \
-						http://127.0.0.1/play_audio >/dev/null 2>&1
+					sound=/usr/share/openipc/sounds/ready_48k.pcm
+					curl -sf --data-binary "@$sound" \
+						http://127.0.0.1/play_audio >/dev/null 2>&1 ||
+						aplay -q -t raw -f S16_LE -r 48000 -c 1 "$sound" 2>/dev/null
 					sleep 3
 					reboot
 					exit 0
