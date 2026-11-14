@@ -451,7 +451,11 @@ do_update_kernel() {
 		else
 			local ksoc=$(nor_split_soc "$x")
 			if [ "$vendor" != "ingenic" ] && [ "$vendor" != "rockchip" ]; then
-				check_soc "$ksoc"
+				if nor_split_soc_cut_ok "$x"; then
+					echo "SoC OK (kernel name cut to '$ksoc')"
+				else
+					check_soc "$ksoc"
+				fi
 			fi
 			compare_versions "$kernel_version" "$(get_kernel_version "$x")" && return 0
 		fi
@@ -526,6 +530,8 @@ soc_guarded_by_kernel() {
 	[ "$vendor" = "ingenic" ] && return 1
 	[ "$vendor" = "rockchip" ] && return 1
 	[ "$(xxd -p -l 4 "$k" 2>/dev/null)" = "d00dfeed" ] && return 1
+	# A cut name proves only the start of the SoC.
+	uimage_name_cut "$k" && return 1
 	return 0
 }
 
@@ -832,6 +838,15 @@ nor_split_soc() {
 	od -j 32 -N 32 -S 1 -A n "$1" 2>&3 | tr -d ' ' | sed 's/.*-//'
 }
 
+# Whether that name filled its 32 bytes. mkimage cuts a longer name with no
+# terminator, so a release carrying local version suffixes,
+# "Linux-4.19.325-cip136-st20-fh8626-fh8626v100", arrives as
+# "Linux-4.19.325-cip136-st20-fh862": the last word is then only the start of
+# the SoC.
+uimage_name_cut() {
+	[ "$(xxd -p -s 63 -l 1 "$1" 2>&3)" != "00" ]
+}
+
 # "mtdN offset size name" for every partition, in device order. Kernels from
 # 4.1 on give each partition's offset in sysfs. The older ones -- 3.18 on the
 # Hi3516CV300 and Hi3519V101 families and on Hi3536CV100, 3.0 and 3.4 on the
@@ -1036,7 +1051,17 @@ nor_split_blob_size() {
 # check_soc's question, asked of a firmware.bin's uImage.
 nor_split_soc_ok() {
 	local s=$(nor_split_soc "$1")
-	[ "$s" = "$model" ] || { [ -n "$s" ] && [ "$s" = "$platform_soc" ]; }
+	[ "$s" = "$model" ] || { [ -n "$s" ] && [ "$s" = "$platform_soc" ]; } ||
+		nor_split_soc_cut_ok "$1"
+}
+
+# A cut name matches when its last word starts this camera's SoC.
+nor_split_soc_cut_ok() {
+	local s=$(nor_split_soc "$1")
+	[ -n "$s" ] && uimage_name_cut "$1" || return 1
+	case "$model" in "$s"*) return 0 ;; esac
+	[ -n "$platform_soc" ] && case "$platform_soc" in "$s"*) return 0 ;; esac
+	return 1
 }
 
 nor_split_image() {
